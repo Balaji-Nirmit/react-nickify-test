@@ -1,6 +1,6 @@
 import './Nickify.css'
 import { useEditor, EditorContent } from "@tiptap/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import StarterKit from "@tiptap/starter-kit";
 import Document from "@tiptap/extension-document";
@@ -38,7 +38,69 @@ import ts from "highlight.js/lib/languages/typescript";
 import html from "highlight.js/lib/languages/xml";
 import NickifyToolbar from "./NickifyToolbar";
 import DOMPurify from 'dompurify';
+import { useRef } from 'react';
+import { Plugin } from 'prosemirror-state';
+import { Extension } from '@tiptap/core';
 
+const useDebouncedShow = (rawShow: boolean, forceShow: boolean) => {
+    const [debouncedShow, setDebouncedShow] = useState(false);
+
+    useEffect(() => {
+        if (forceShow || rawShow) {
+            setDebouncedShow(true);
+        } else {
+            const timeout = setTimeout(() => {
+                setDebouncedShow(false);
+            }, 150); // tolerate brief selection loss
+            return () => clearTimeout(timeout);
+        }
+    }, [rawShow, forceShow]);
+
+    return debouncedShow;
+};
+
+export function ForceShowExtension(
+    setRawShow: (value: boolean) => void,
+    forceShowRef: React.MutableRefObject<boolean>
+) {
+    return Extension.create({
+        name: 'forceShow',
+
+        addProseMirrorPlugins(): Plugin[] {
+            return [
+                new Plugin({
+                    props: {
+                        handleKeyDown(view, event) {
+                            if ((event.ctrlKey || event.metaKey) && event.key === 'ArrowDown') {
+                                forceShowRef.current = true;
+                                setRawShow(true);
+                                setTimeout(() => {
+                                    forceShowRef.current = false;
+                                }, 200);
+                                return true;
+                            }
+                            return false;
+                        },
+                        handleDOMEvents: {
+                            keyup(view) {
+                                if (forceShowRef.current) return false;
+                                const isTextSelected = !view.state.selection.empty;
+                                setRawShow(isTextSelected);
+                                return false;
+                            },
+                            mouseup(view) {
+                                if (forceShowRef.current) return false;
+                                const isTextSelected = !view.state.selection.empty;
+                                setRawShow(isTextSelected);
+                                return false;
+                            },
+                        },
+                    },
+                }),
+            ];
+        },
+    });
+}
 
 const lowlight = createLowlight(common);
 
@@ -160,10 +222,13 @@ const detectMaliciousPatterns = (content: string): string[] => {
 };
 
 const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextEditorProps) => {
-    const [show, setShow] = useState<Boolean>(false);
+    const forceShow = useRef(false);
+    const [rawShow, setRawShow] = useState(false);
+    const show = useDebouncedShow(rawShow, forceShow.current);
 
     const editor = useEditor({
         extensions: [
+            ForceShowExtension(setRawShow, forceShow),
             StarterKit,
             Document,
             Paragraph,
@@ -273,6 +338,9 @@ const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextE
         ],
         content: initialContent,
         onUpdate: ({ editor }) => {
+            if (forceShow.current) return;
+            const isTextSelected = !editor.state.selection.empty;
+            setRawShow(isTextSelected);
             const rawContent = editor.getHTML();
             const maliciousPatterns = detectMaliciousPatterns(rawContent);
             if (maliciousPatterns.length > 0) {
@@ -280,44 +348,6 @@ const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextE
             }
             const sanitizedContent = sanitizeHTML(rawContent);
             setContent(sanitizedContent);
-        },
-        // onUpdate: ({ editor }) => {
-        //     setContent(editor.getHTML());
-        // },
-        editorProps: {
-            handleKeyDown(view, event) {
-                const isCtrlOrCmd = event.metaKey || event.ctrlKey;
-
-                if (event.key === "ArrowDown" && isCtrlOrCmd) {
-                    view.dom.dataset.forceShow = "true"; // set custom flag on editor DOM
-                    setShow(true);
-                    return true;
-                }
-
-                return false;
-            },
-            handleDOMEvents: {
-                mouseup: (view, event) => {
-                    if (view.dom.dataset.forceShow === "true") {
-                        view.dom.dataset.forceShow = 'false';
-                        return false;
-                    }
-                    const isTextSelected = !view.state.selection.empty;
-                    setShow(isTextSelected);
-                    return false;
-                },
-                keyup(view) {
-                    // Prevent flicker caused by keyup after Cmd+ArrowDown
-                    if (view.dom.dataset.forceShow === "true") {
-                        view.dom.dataset.forceShow = "false";
-                        return false;
-                    }
-
-                    const isTextSelected = !view.state.selection.empty;
-                    setShow(isTextSelected);
-                    return false;
-                },
-            }
         },
     });
 
