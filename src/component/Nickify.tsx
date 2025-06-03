@@ -37,6 +37,7 @@ import js from "highlight.js/lib/languages/javascript";
 import ts from "highlight.js/lib/languages/typescript";
 import html from "highlight.js/lib/languages/xml";
 import NickifyToolbar from "./NickifyToolbar";
+import DOMPurify from 'dompurify';
 
 
 const lowlight = createLowlight(common);
@@ -51,7 +52,112 @@ type TextEditorProps = {
     setContent: React.Dispatch<React.SetStateAction<string>>;
 };
 
+// DOMPurify configuration for rich text editor
+const sanitizerConfig = {
+    ALLOWED_TAGS: [
+        'p', 'br', 'strong', 'em', 'u', 's', 'sub', 'sup',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'ul', 'ol', 'li',
+        'blockquote', 'pre', 'code',
+        'a', 'img',
+        'table', 'thead', 'tbody', 'tr', 'th', 'td',
+        'div', 'span'
+    ],
 
+    // Allowed attributes
+    ALLOWED_ATTR: [
+        'href', 'target', 'rel',
+        'src', 'alt', 'width', 'height',
+        'class', 'style',
+        'colspan', 'rowspan'
+    ],
+
+    // Remove unsafe elements
+    FORBID_TAGS: ['script', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'option'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur', 'onchange', 'onsubmit'],
+
+    // Additional security options
+    SANITIZE_DOM: true,
+    KEEP_CONTENT: true
+};
+
+// Multi-layer sanitization function
+const sanitizeHTML = (htmlContent: string): string => {
+    if (!htmlContent || typeof htmlContent !== 'string') {
+        return '';
+    }
+
+    // Layer 1: DOMPurify sanitization
+    let sanitizedContent = DOMPurify.sanitize(htmlContent, sanitizerConfig);
+
+    // Layer 2: Custom sanitization for additional threats
+    sanitizedContent = customSanitization(sanitizedContent);
+
+    return sanitizedContent;
+};
+
+
+// Custom sanitization layer
+const customSanitization = (content: string): string => {
+    return content
+        // Remove any remaining script-like content
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+
+        // Remove javascript: protocols
+        .replace(/javascript:/gi, 'removed:')
+
+        // Remove vbscript: protocols  
+        .replace(/vbscript:/gi, 'removed:')
+
+        // Remove data: URIs except for images
+        .replace(/data:(?!image\/)[^;,]*[;,]/gi, 'removed:')
+
+        // Remove expression() CSS
+        .replace(/expression\s*\(/gi, 'removed(')
+
+        // Remove @import in CSS
+        .replace(/@import/gi, 'removed')
+
+        // Remove behavior CSS property
+        .replace(/behavior\s*:/gi, 'removed:')
+
+        // Remove -moz-binding CSS
+        .replace(/-moz-binding/gi, 'removed')
+
+        // Remove any remaining event handlers
+        .replace(/\bon\w+\s*=/gi, 'data-removed=')
+
+        // Remove style attributes with potentially dangerous content
+        .replace(/style\s*=\s*["'][^"']*(?:expression|javascript|vbscript|data:|@import)[^"']*["']/gi, '');
+};
+
+// Malicious pattern detection
+const detectMaliciousPatterns = (content: string): string[] => {
+    const suspiciousPatterns = [
+        { pattern: /javascript:/gi, name: 'JavaScript Protocol' },
+        { pattern: /vbscript:/gi, name: 'VBScript Protocol' },
+        { pattern: /data:text\/html/gi, name: 'HTML Data URI' },
+        { pattern: /data:application/gi, name: 'Application Data URI' },
+        { pattern: /<script/gi, name: 'Script Tag' },
+        { pattern: /expression\s*\(/gi, name: 'CSS Expression' },
+        { pattern: /behavior\s*:/gi, name: 'CSS Behavior' },
+        { pattern: /-moz-binding/gi, name: 'Mozilla Binding' },
+        { pattern: /@import/gi, name: 'CSS Import' },
+        { pattern: /\\u00/gi, name: 'Unicode Escape' },
+        { pattern: /&#x/gi, name: 'Hex Entity' },
+        { pattern: /on\w+\s*=/gi, name: 'Event Handler' }
+    ];
+
+    const detectedPatterns: string[] = [];
+
+    suspiciousPatterns.forEach(({ pattern, name }) => {
+        if (pattern.test(content)) {
+            detectedPatterns.push(name);
+        }
+    });
+
+    return detectedPatterns;
+};
 
 const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextEditorProps) => {
     const [show, setShow] = useState<Boolean>(false);
@@ -167,8 +273,17 @@ const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextE
         ],
         content: initialContent,
         onUpdate: ({ editor }) => {
-            setContent(editor.getHTML());
+            const rawContent = editor.getHTML();
+            const maliciousPatterns = detectMaliciousPatterns(rawContent);
+            if (maliciousPatterns.length > 0) {
+                console.warn('Malicious patterns detected:', maliciousPatterns);
+            }
+            const sanitizedContent = sanitizeHTML(rawContent);
+            setContent(sanitizedContent);
         },
+        // onUpdate: ({ editor }) => {
+        //     setContent(editor.getHTML());
+        // },
         editorProps: {
             handleKeyDown(view, event) {
                 const isCtrlOrCmd = event.metaKey || event.ctrlKey;
@@ -181,10 +296,10 @@ const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextE
 
                 return false;
             },
-            handleDOMEvents:{
-                mouseup:(view,event)=>{
-                    if(view.dom.dataset.forceShow==="true"){
-                        view.dom.dataset.forceShow='false';
+            handleDOMEvents: {
+                mouseup: (view, event) => {
+                    if (view.dom.dataset.forceShow === "true") {
+                        view.dom.dataset.forceShow = 'false';
                         return false;
                     }
                     const isTextSelected = !view.state.selection.empty;
@@ -215,9 +330,9 @@ const Nickify = ({ initialContent = '', isAiEnabled = false, setContent }: TextE
             style={{
                 border: "1px solid #d1d5db", // border-gray-300
                 margin: "1rem",               // m-4
-              }}
+            }}
         />
-       
+
         {show && <NickifyToolbar editor={editor} isAiEnabled={isAiEnabled} />}
 
     </>;
